@@ -1,10 +1,12 @@
 ﻿# Python
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
 .venv/
 .env/
 
-# Build / dist
+# Build / packaging
 build/
 dist/
 *.egg-info/
@@ -12,9 +14,11 @@ dist/
 # Logs
 *.log
 
-# IDE
+# IDE / OS
 .vscode/
 .idea/
+.DS_Store
+Thumbs.db
 
-# Do not push sample files
+# Local data (do not publish test inputs)
 samples/

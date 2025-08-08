@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import binascii
+import hashlib
 
 from asn1crypto import cms, x509, core
 from gostcrypto import gosthash, gostsignature
@@ -259,10 +260,16 @@ def verify_detached_cms(pdf_bytes: bytes, sig_bytes: bytes):
     if signed_attrs is None:
         raise ValueError("Signed attributes are required for CAdES/CMS verification")
     msg_digest = None
+    signing_time = None
     for a in signed_attrs:
         if a['type'].native == 'message_digest':
             msg_digest = a['values'][0].native
             break
+        if a['type'].native == 'signing_time':
+            try:
+                signing_time = a['values'][0].native.isoformat()
+            except Exception:
+                signing_time = None
     if msg_digest is None:
         raise ValueError("messageDigest attribute not found")
     real_digest = stribog_hash(pdf_bytes, mode_bits)
@@ -301,11 +308,35 @@ def verify_detached_cms(pdf_bytes: bytes, sig_bytes: bytes):
     if not sign_obj.verify(pub_fixed, data_hash, sig_fixed):
         return False, {'error': 'cryptographic verify failed'}
 
+    # Период действия сертификата
+    try:
+        validity = cert['tbs_certificate']['validity']
+        not_before = validity['not_before'].native
+        not_after = validity['not_after'].native
+        not_before_str = not_before.isoformat()
+        not_after_str = not_after.isoformat()
+    except Exception:
+        not_before_str = None
+        not_after_str = None
+
+    # Отпечаток сертификата (SHA-256)
+    try:
+        cert_sha256 = hashlib.sha256(cert.dump()).hexdigest().upper()
+    except Exception:
+        cert_sha256 = None
+
     return True, {
         'subject': cert.subject.human_friendly,
         'issuer': cert.issuer.human_friendly,
         'serial': int(cert.serial_number),
         'gost_mode': mode_bits,
+        'signing_time': signing_time,
+        'file_hash': binascii.hexlify(real_digest).decode(),
+        'not_before': not_before_str,
+        'not_after': not_after_str,
+        'cert_thumb_sha256': cert_sha256,
+        'signature_type': 'CMS',
+        'format': 'Подпись в формате CAdES-T',
     }
 
 def main():
