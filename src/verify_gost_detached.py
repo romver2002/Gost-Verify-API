@@ -244,6 +244,70 @@ def find_signer_cert(sd: cms.SignedData, signer_info: cms.SignerInfo) -> x509.Ce
     return ce if isinstance(ce, x509.Certificate) else ce.chosen
 
 
+def verify_detached_cms(pdf_bytes: bytes, sig_bytes: bytes):
+    """Проверка откреплённой подписи CMS (ГОСТ 2012). Возвращает (ok, details)."""
+    sd = load_signed_data(sig_bytes)
+    signer_info = pick_signer(sd)
+    cert = find_signer_cert(sd, signer_info)
+
+    # Определяем режим ГОСТ, кривую и ключ
+    mode_bits, curve, pub_bytes = detect_mode_and_curve_and_pubkey(signer_info, cert)
+    mode_const = gostsignature.MODE_256 if mode_bits == 256 else gostsignature.MODE_512
+
+    # Проверка messageDigest
+    signed_attrs = signer_info['signed_attrs']
+    if signed_attrs is None:
+        raise ValueError("Signed attributes are required for CAdES/CMS verification")
+    msg_digest = None
+    for a in signed_attrs:
+        if a['type'].native == 'message_digest':
+            msg_digest = a['values'][0].native
+            break
+    if msg_digest is None:
+        raise ValueError("messageDigest attribute not found")
+    real_digest = stribog_hash(pdf_bytes, mode_bits)
+    if real_digest != msg_digest:
+        return False, {
+            'error': 'messageDigest != hash(file)',
+            'expected': binascii.hexlify(msg_digest).decode(),
+            'actual': binascii.hexlify(real_digest).decode(),
+        }
+
+    # Универсальный SET (0x31) из содержимого signedAttrs (A0) и реверс хэша
+    try:
+        contents = signed_attrs.contents
+        universal_der = b"\x31" + _encode_der_length(len(contents)) + contents
+        data_hash = stribog_hash(universal_der, mode_bits)[::-1]
+    except Exception:
+        to_be_signed = signed_attrs.dump()
+        data_hash = stribog_hash(to_be_signed, mode_bits)[::-1]
+
+    # Подпись S||R
+    sig_raw = signer_info['signature'].native
+    if len(sig_raw) not in (64, 128):
+        return False, {'error': f'Unexpected signature length: {len(sig_raw)}'}
+    half = len(sig_raw) // 2
+    sig_fixed = sig_raw[half:] + sig_raw[:half]
+
+    # Ключ rev(X)||rev(Y)
+    if len(pub_bytes) not in (64, 128):
+        return False, {'error': f'Unexpected public key length: {len(pub_bytes)}'}
+    khalf = len(pub_bytes) // 2
+    x = pub_bytes[:khalf][::-1]
+    y = pub_bytes[khalf:][::-1]
+    pub_fixed = x + y
+
+    sign_obj = gostsignature.new(mode_const, curve)
+    if not sign_obj.verify(pub_fixed, data_hash, sig_fixed):
+        return False, {'error': 'cryptographic verify failed'}
+
+    return True, {
+        'subject': cert.subject.human_friendly,
+        'issuer': cert.issuer.human_friendly,
+        'serial': int(cert.serial_number),
+        'gost_mode': mode_bits,
+    }
+
 def main():
     # Старт
     if len(sys.argv) != 3:

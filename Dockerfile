@@ -6,4 +6,5 @@ RUN python -m pip install --upgrade pip setuptools wheel
 COPY src/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY src/ /app/
-CMD ["python", "verify_gost_detached.py", "/data/doc.pdf", "/data/doc.sig"]
+# По умолчанию запускаем API; для CLI можно переопределить CMD в compose
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
