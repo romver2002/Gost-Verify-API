@@ -1,0 +1,8 @@
+version: "3.9"
+services:
+  gost-verify:
+    build: .
+    image: gost-verify:latest
+    container_name: gost-verify
+    volumes:
+      - ./samples:/data:ro
