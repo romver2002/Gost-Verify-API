@@ -2,6 +2,7 @@
 import sys
 import binascii
 import hashlib
+import re
 
 from asn1crypto import cms, x509, core
 from gostcrypto import gosthash, gostsignature
@@ -105,6 +106,31 @@ def bit_string_payload(bitstr_obj) -> bytes:
     if unused_bits != 0:
         die("BIT STRING with unused bits not supported")
     return bytes(payload)
+
+
+def _get_common_name(name: x509.Name) -> str | None:
+    """Извлечь Common Name (CN) из x509.Name максимально надёжно."""
+    try:
+        native = name.native
+        # Вариант asn1crypto: список RDN, каждый — словарь атрибутов
+        if isinstance(native, list):
+            for rdn in native:
+                if isinstance(rdn, dict) and 'common_name' in rdn:
+                    return rdn['common_name']
+        # Иногда может прийти словарь
+        if isinstance(native, dict) and 'common_name' in native:
+            return native['common_name']
+    except Exception:
+        pass
+    # Фоллбек: парсим human_friendly
+    try:
+        hf = name.human_friendly or ''
+        m = re.search(r'Common Name:\s*([^;\n]+)', hf)
+        if m:
+            return m.group(1).strip()
+    except Exception:
+        pass
+    return None
 
 
 def detect_mode_and_curve_and_pubkey(signer_info: cms.SignerInfo, cert: x509.Certificate):
@@ -353,11 +379,14 @@ def verify_detached_cms(pdf_bytes: bytes, sig_bytes: bytes):
 
 def main():
     # Старт
-    if len(sys.argv) != 3:
-        print("Usage: verify_gost_detached.py <file.pdf> <file.sig>")
+    flags = set(a for a in sys.argv[1:] if a.startswith('-'))
+    verbose = ('--verbose' in flags)
+    show_details = verbose or ('--details' in flags)
+    args = [a for a in sys.argv[1:] if not a.startswith('-')]
+    if len(args) != 2:
+        print("Usage: verify_gost_detached.py <file.pdf> <file.sig> [--details] [--verbose]")
         sys.exit(2)
-    pdf_path = sys.argv[1]
-    sig_path = sys.argv[2]
+    pdf_path, sig_path = args
 
     # Читаем входы
     try:
@@ -409,7 +438,8 @@ def main():
         print(f"actual  (from pdf): {binascii.hexlify(real_digest).decode()}")
         sys.exit(1)
     else:
-        print(f"messageDigest OK (Streebog-{mode_bits})")
+        if show_details:
+            print(f"messageDigest OK (Streebog-{mode_bits})")
 
     # Данные для подписи: попробуем разные варианты кодирования signedAttrs
     to_be_signed = signed_attrs.dump()
@@ -504,9 +534,11 @@ def main():
         if (mode_bits == 256 and '2012-256' in k) or (mode_bits == 512 and '12-512' in k):
             curve_keys.append(k)
 
-    print(f"Проверка подписи: блок 1 (gostcrypto). Кандидатов кривых: {len(curve_keys)}")
+    if verbose:
+        print(f"Проверка подписи: блок 1 (gostcrypto). Кандидатов кривых: {len(curve_keys)}")
     for curve_key in curve_keys:
-        print(f"  -> кривая: {curve_key}")
+        if verbose:
+            print(f"  -> кривая: {curve_key}")
         try:
             sign_obj = gostsignature.new(mode_const, pool[curve_key])
         except Exception:
@@ -534,11 +566,13 @@ def main():
 
     # Фоллбек: проверка через pygost (если не удалось через gostcrypto и pygost доступен)
     if not ok and _PYGOST_AVAILABLE:
-        print("Проверка подписи: блок 2 (pygost). Перебираем набор кривых pygost по разрядности")
+        if verbose:
+            print("Проверка подписи: блок 2 (pygost). Перебираем набор кривых pygost по разрядности")
         # Подбор кривой pygost по размеру
         pygost_curve_names = [name for name, params in PYGOST_CURVES.items() if (mode_bits == 256 and '256' in name) or (mode_bits == 512 and '512' in name)]
         for curve_name in pygost_curve_names:
-            print(f"  -> кривая (pygost): {curve_name}")
+            if verbose:
+                print(f"  -> кривая (pygost): {curve_name}")
             params = PYGOST_CURVES[curve_name]
             # публичный ключ как point раскодируем всеми вариантами
             for pub_try in pub_candidates:
@@ -593,23 +627,23 @@ def main():
     sig_variant_names = {
         0: 'R||S', 1: 'S||R', 2: 'rev(R)||rev(S)', 3: 'rev(S)||rev(R)', 4: 'rev(R||S)', 5: 'rev(S||R)'
     }
-    if chosen_curve_key is not None and chosen_combo is not None and chosen_data_variant is not None:
+    if show_details and chosen_curve_key is not None and chosen_combo is not None and chosen_data_variant is not None:
         print("Выбранные параметры проверки:")
         print(f"  кривая: {chosen_curve_key}")
         print(f"  вариант данных: {data_variant_names.get(chosen_data_variant, str(chosen_data_variant))}")
         print(f"  вариант ключа: {pub_variant_names.get(chosen_combo[0], str(chosen_combo[0]))}")
         print(f"  вариант подписи: {sig_variant_names.get(chosen_combo[1], str(chosen_combo[1]))}")
 
-    # Информация о сертификате
-    subject = cert.subject.human_friendly
-    issuer = cert.issuer.human_friendly
+    # Информация о сертификате (кратко)
+    subject_cn = _get_common_name(cert.subject) or cert.subject.human_friendly
+    issuer_cn = _get_common_name(cert.issuer) or cert.issuer.human_friendly
     serial = cert.serial_number
 
     print("Signature OK")
-    print(f"Signer subject: {subject}")
-    print(f"Issuer: {issuer}")
-    print(f"Serial: {serial}")
     print(f"GOST mode: {mode_bits}")
+    print(f"Signer CN: {subject_cn}")
+    print(f"Issuer CN: {issuer_cn}")
+    print(f"Serial: {serial}")
     print("Script finished")
 
 if __name__ == "__main__":
