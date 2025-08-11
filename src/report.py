@@ -42,12 +42,13 @@ def build_pdf_report(ok: bool, details: Dict, pdf_name: str = 'doc.pdf', sig_nam
     elems.append(Paragraph("ПРОТОКОЛ ПРОВЕРКИ ЭЛЕКТРОННОЙ ПОДПИСИ", styles['Heading1']))
 
     # Документ №1
+    mode = details.get('gost_mode', '') or ''
     head = [
         [Paragraph('<b>Документ №1</b>', styles['Normal'])],
         [Table([
-            [Paragraph('Имя файла:', pstyle), Paragraph(sig_name, pstyle)],
-            [Paragraph('Исходное имя файла:', pstyle), Paragraph(pdf_name, pstyle)],
-            [Paragraph('Хэш файла подписи:', pstyle), Paragraph(_zwsp_wrap((details.get('file_hash', '') or '').upper(), 32), pstyle)],
+            [Paragraph('Файл подписи (SIG):', pstyle), Paragraph(sig_name, pstyle)],
+            [Paragraph('Исходный файл (PDF):', pstyle), Paragraph(pdf_name, pstyle)],
+            [Paragraph(f'Хэш исходного файла (Streebog-{mode}):', pstyle), Paragraph(_zwsp_wrap((details.get('file_hash', '') or '').upper(), 32), pstyle)],
         ], colWidths=[160, 340])]
     ]
     head_tbl = Table(head, colWidths=[520])
@@ -83,6 +84,13 @@ def build_pdf_report(ok: bool, details: Dict, pdf_name: str = 'doc.pdf', sig_nam
         [Paragraph('Закрытый ключ действителен:', pstyle), Paragraph(f"с {details.get('not_before', '')} по {details.get('not_after', '')}", pstyle)],
         [Paragraph('Серийный номер:', pstyle), Paragraph(str(details.get('serial', '')), pstyle)],
         [Paragraph('Отпечаток:', pstyle), Paragraph(_zwsp_wrap(details.get('cert_thumb_sha256', '') or '', 32), pstyle)],
+        [Paragraph('Режим ГОСТ:', pstyle), Paragraph(str(details.get('gost_mode', '') or ''), pstyle)],
+        [Paragraph('Движок проверки:', pstyle), Paragraph(details.get('verify_engine', '') or '', pstyle)],
+        [Paragraph('Кривая (pool key):', pstyle), Paragraph(details.get('curve_key', '') or '', pstyle)],
+        [Paragraph('OID кривой:', pstyle), Paragraph(details.get('curve_oid', '') or '', pstyle)],
+        [Paragraph('Вариант данных:', pstyle), Paragraph(details.get('data_variant', '') or '', pstyle)],
+        [Paragraph('Вариант ключа:', pstyle), Paragraph(details.get('pub_variant', '') or '', pstyle)],
+        [Paragraph('Вариант подписи:', pstyle), Paragraph(details.get('sig_variant', '') or '', pstyle)],
         [Paragraph('Доп. данные:', pstyle), Paragraph('', pstyle)],
         [Paragraph('Время подписи, полученное из штампа:', pstyle), Paragraph(details.get('signing_time', '') or '', pstyle)],
         [Paragraph('Время подписи:', pstyle), Paragraph(details.get('signing_time', '') or '', pstyle)],

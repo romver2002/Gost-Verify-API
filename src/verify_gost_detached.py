@@ -205,7 +205,7 @@ def detect_mode_and_curve_and_pubkey(signer_info: cms.SignerInfo, cert: x509.Cer
         curve = None
 
     # Кривую выбрали
-    return mode, curve, pub_bytes
+    return mode, curve, pub_bytes, chosen_key, curve_oid
 
 
 def load_signed_data(sig_bytes: bytes) -> cms.SignedData:
@@ -252,7 +252,7 @@ def verify_detached_cms(pdf_bytes: bytes, sig_bytes: bytes):
     cert = find_signer_cert(sd, signer_info)
 
     # Определяем режим ГОСТ, кривую и ключ
-    mode_bits, curve, pub_bytes = detect_mode_and_curve_and_pubkey(signer_info, cert)
+    mode_bits, curve, pub_bytes, chosen_key_detected, curve_oid = detect_mode_and_curve_and_pubkey(signer_info, cert)
     mode_const = gostsignature.MODE_256 if mode_bits == 256 else gostsignature.MODE_512
 
     # Проверка messageDigest
@@ -285,9 +285,11 @@ def verify_detached_cms(pdf_bytes: bytes, sig_bytes: bytes):
         contents = signed_attrs.contents
         universal_der = b"\x31" + _encode_der_length(len(contents)) + contents
         data_hash = stribog_hash(universal_der, mode_bits)[::-1]
+        data_variant_label = 'universal_set_hash_rev'
     except Exception:
         to_be_signed = signed_attrs.dump()
         data_hash = stribog_hash(to_be_signed, mode_bits)[::-1]
+        data_variant_label = 'a0_hash_rev'
 
     # Подпись S||R
     sig_raw = signer_info['signature'].native
@@ -306,7 +308,11 @@ def verify_detached_cms(pdf_bytes: bytes, sig_bytes: bytes):
 
     sign_obj = gostsignature.new(mode_const, curve)
     if not sign_obj.verify(pub_fixed, data_hash, sig_fixed):
-        return False, {'error': 'cryptographic verify failed'}
+        return False, {
+            'error': 'cryptographic verify failed',
+            'stage': 'direct-verify',
+            'gost_mode': mode_bits,
+        }
 
     # Период действия сертификата
     try:
@@ -337,6 +343,12 @@ def verify_detached_cms(pdf_bytes: bytes, sig_bytes: bytes):
         'cert_thumb_sha256': cert_sha256,
         'signature_type': 'CMS',
         'format': 'Подпись в формате CAdES-T',
+        'verify_engine': 'gostcrypto',
+        'curve_key': chosen_key_detected,
+        'curve_oid': curve_oid,
+        'data_variant': data_variant_label,
+        'pub_variant': 'rev(X)||rev(Y)',
+        'sig_variant': 'S||R',
     }
 
 def main():
@@ -367,7 +379,7 @@ def main():
     cert = find_signer_cert(sd, signer_info)
 
     # Определяем режим ГОСТ, кривую и получаем публичный ключ как bytes (X||Y)
-    mode_bits, curve, pub_bytes = detect_mode_and_curve_and_pubkey(signer_info, cert)
+    mode_bits, curve, pub_bytes, detected_curve_key, detected_curve_oid = detect_mode_and_curve_and_pubkey(signer_info, cert)
     mode_const = gostsignature.MODE_256 if mode_bits == 256 else gostsignature.MODE_512
     # Режим ГОСТ: 256/512
 
@@ -396,6 +408,8 @@ def main():
         print(f"expected (from sig): {binascii.hexlify(msg_digest).decode()}")
         print(f"actual  (from pdf): {binascii.hexlify(real_digest).decode()}")
         sys.exit(1)
+    else:
+        print(f"messageDigest OK (Streebog-{mode_bits})")
 
     # Данные для подписи: попробуем разные варианты кодирования signedAttrs
     to_be_signed = signed_attrs.dump()
@@ -490,7 +504,9 @@ def main():
         if (mode_bits == 256 and '2012-256' in k) or (mode_bits == 512 and '12-512' in k):
             curve_keys.append(k)
 
+    print(f"Проверка подписи: блок 1 (gostcrypto). Кандидатов кривых: {len(curve_keys)}")
     for curve_key in curve_keys:
+        print(f"  -> кривая: {curve_key}")
         try:
             sign_obj = gostsignature.new(mode_const, pool[curve_key])
         except Exception:
@@ -518,9 +534,11 @@ def main():
 
     # Фоллбек: проверка через pygost (если не удалось через gostcrypto и pygost доступен)
     if not ok and _PYGOST_AVAILABLE:
+        print("Проверка подписи: блок 2 (pygost). Перебираем набор кривых pygost по разрядности")
         # Подбор кривой pygost по размеру
         pygost_curve_names = [name for name, params in PYGOST_CURVES.items() if (mode_bits == 256 and '256' in name) or (mode_bits == 512 and '512' in name)]
         for curve_name in pygost_curve_names:
+            print(f"  -> кривая (pygost): {curve_name}")
             params = PYGOST_CURVES[curve_name]
             # публичный ключ как point раскодируем всеми вариантами
             for pub_try in pub_candidates:
@@ -560,6 +578,27 @@ def main():
     if not ok:
         print("Signature FAIL: cryptographic verify failed")
         sys.exit(1)
+
+    # Если успех в одном из блоков — сообщим выбранные варианты
+    data_variant_names = {
+        0: 'hash(A0)', 6: 'rev hash(A0)',
+        1: 'A0', 7: 'rev A0',
+        2: 'hash(SET)', 8: 'rev hash(SET)',
+        3: 'SET', 9: 'rev SET',
+        4: 'hash(SET, normalized)', 5: 'SET, normalized',
+    }
+    pub_variant_names = {
+        0: 'X||Y', 1: 'Y||X', 2: 'rev(X)||rev(Y)', 3: 'rev(Y)||rev(X)', 4: 'rev(X||Y)', 5: 'rev(Y||X)'
+    }
+    sig_variant_names = {
+        0: 'R||S', 1: 'S||R', 2: 'rev(R)||rev(S)', 3: 'rev(S)||rev(R)', 4: 'rev(R||S)', 5: 'rev(S||R)'
+    }
+    if chosen_curve_key is not None and chosen_combo is not None and chosen_data_variant is not None:
+        print("Выбранные параметры проверки:")
+        print(f"  кривая: {chosen_curve_key}")
+        print(f"  вариант данных: {data_variant_names.get(chosen_data_variant, str(chosen_data_variant))}")
+        print(f"  вариант ключа: {pub_variant_names.get(chosen_combo[0], str(chosen_combo[0]))}")
+        print(f"  вариант подписи: {sig_variant_names.get(chosen_combo[1], str(chosen_combo[1]))}")
 
     # Информация о сертификате
     subject = cert.subject.human_friendly

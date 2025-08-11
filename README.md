@@ -44,6 +44,15 @@ Signer subject: ...
 Issuer: ...
 Serial: ...
 GOST mode: 256
+messageDigest OK (Streebog-256)
+Проверка подписи: блок 1 (gostcrypto). Кандидатов кривых: N
+  -> кривая: <имя>
+Выбранные параметры проверки:
+  кривая: <имя>
+  вариант данных: <variant>
+  вариант ключа: <variant>
+  вариант подписи: <variant>
+Script finished
 ```
 Ошибка: `ERROR: ...` или `Signature FAIL: ...`
 
