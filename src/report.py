@@ -1,5 +1,4 @@
 from io import BytesIO
-from typing import Dict
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -7,6 +6,9 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+# Импортируем модель, которую будет принимать функция
+from models import VerificationSuccess
 
 
 def register_fonts() -> tuple[str, str]:
@@ -25,7 +27,7 @@ def _zwsp_wrap(s: str, step: int = 32) -> str:
     return "\u200b".join([s[i:i + step] for i in range(0, len(s), step)])
 
 
-def build_pdf_report(ok: bool, details: Dict, pdf_name: str = 'doc.pdf', sig_name: str = 'doc.sig') -> bytes:
+def build_pdf_report(ok: bool, details: VerificationSuccess, pdf_name: str = 'doc.pdf', sig_name: str = 'doc.sig') -> bytes:
     base_font, bold_font = register_fonts()
 
     styles = getSampleStyleSheet()
@@ -42,13 +44,13 @@ def build_pdf_report(ok: bool, details: Dict, pdf_name: str = 'doc.pdf', sig_nam
     elems.append(Paragraph("ПРОТОКОЛ ПРОВЕРКИ ЭЛЕКТРОННОЙ ПОДПИСИ", styles['Heading1']))
 
     # Документ №1
-    mode = details.get('gost_mode', '') or ''
+    mode = details.gost_mode or ''
     head = [
         [Paragraph('<b>Документ №1</b>', styles['Normal'])],
         [Table([
             [Paragraph('Файл подписи (SIG):', pstyle), Paragraph(sig_name, pstyle)],
             [Paragraph('Исходный файл (PDF):', pstyle), Paragraph(pdf_name, pstyle)],
-            [Paragraph(f'Хэш исходного файла (Streebog-{mode}):', pstyle), Paragraph(_zwsp_wrap((details.get('file_hash', '') or '').upper(), 32), pstyle)],
+            [Paragraph(f'Хэш исходного файла (Streebog-{mode}):', pstyle), Paragraph(_zwsp_wrap((details.file_hash or '').upper(), 32), pstyle)],
         ], colWidths=[160, 340])]
     ]
     head_tbl = Table(head, colWidths=[520])
@@ -74,27 +76,27 @@ def build_pdf_report(ok: bool, details: Dict, pdf_name: str = 'doc.pdf', sig_nam
     elems.append(Spacer(1, 10))
 
     # Сертификат
-    subj = (details.get('subject', '') or '').replace('; ', ';<br/>')
-    iss = (details.get('issuer', '') or '').replace('; ', ';<br/>')
+    subj = (details.subject or '').replace('; ', ';<br/>')
+    iss = (details.issuer or '').replace('; ', ';<br/>')
     cert_tbl = Table([
         [Paragraph('<b>Сведения о сертификате подписи:</b>', pstyle), ''],
         [Paragraph('Субъект:', pstyle), Paragraph(subj, pstyle)],
         [Paragraph('Издатель:', pstyle), Paragraph(iss, pstyle)],
-        [Paragraph('Действителен:', pstyle), Paragraph(f"с {details.get('not_before', '')} по {details.get('not_after', '')}", pstyle)],
-        [Paragraph('Закрытый ключ действителен:', pstyle), Paragraph(f"с {details.get('not_before', '')} по {details.get('not_after', '')}", pstyle)],
-        [Paragraph('Серийный номер:', pstyle), Paragraph(str(details.get('serial', '')), pstyle)],
-        [Paragraph('Отпечаток:', pstyle), Paragraph(_zwsp_wrap(details.get('cert_thumb_sha256', '') or '', 32), pstyle)],
-        [Paragraph('Режим ГОСТ:', pstyle), Paragraph(str(details.get('gost_mode', '') or ''), pstyle)],
-        [Paragraph('Движок проверки:', pstyle), Paragraph(details.get('verify_engine', '') or '', pstyle)],
-        [Paragraph('Кривая (pool key):', pstyle), Paragraph(details.get('curve_key', '') or '', pstyle)],
-        [Paragraph('OID кривой:', pstyle), Paragraph(details.get('curve_oid', '') or '', pstyle)],
-        [Paragraph('Вариант данных:', pstyle), Paragraph(details.get('data_variant', '') or '', pstyle)],
-        [Paragraph('Вариант ключа:', pstyle), Paragraph(details.get('pub_variant', '') or '', pstyle)],
-        [Paragraph('Вариант подписи:', pstyle), Paragraph(details.get('sig_variant', '') or '', pstyle)],
+        [Paragraph('Действителен:', pstyle), Paragraph(f"с {details.not_before or ''} по {details.not_after or ''}", pstyle)],
+        [Paragraph('Закрытый ключ действителен:', pstyle), Paragraph(f"с {details.not_before or ''} по {details.not_after or ''}", pstyle)],
+        [Paragraph('Серийный номер:', pstyle), Paragraph(str(details.serial or ''), pstyle)],
+        [Paragraph('Отпечаток:', pstyle), Paragraph(_zwsp_wrap(details.cert_thumb_sha256 or '', 32), pstyle)],
+        [Paragraph('Режим ГОСТ:', pstyle), Paragraph(str(details.gost_mode or ''), pstyle)],
+        [Paragraph('Движок проверки:', pstyle), Paragraph(details.verify_engine or '', pstyle)],
+        [Paragraph('Кривая (pool key):', pstyle), Paragraph(details.curve_key or '', pstyle)],
+        [Paragraph('OID кривой:', pstyle), Paragraph(details.curve_oid or '', pstyle)],
+        [Paragraph('Вариант данных:', pstyle), Paragraph(details.data_variant or '', pstyle)],
+        [Paragraph('Вариант ключа:', pstyle), Paragraph(details.pub_variant or '', pstyle)],
+        [Paragraph('Вариант подписи:', pstyle), Paragraph(details.sig_variant or '', pstyle)],
         [Paragraph('Доп. данные:', pstyle), Paragraph('', pstyle)],
-        [Paragraph('Время подписи, полученное из штампа:', pstyle), Paragraph(details.get('signing_time', '') or '', pstyle)],
-        [Paragraph('Время подписи:', pstyle), Paragraph(details.get('signing_time', '') or '', pstyle)],
-        [Paragraph('Формат подписи:', pstyle), Paragraph(details.get('format', ''), pstyle)],
+        [Paragraph('Время подписи, полученное из штампа:', pstyle), Paragraph(details.signing_time or '', pstyle)],
+        [Paragraph('Время подписи:', pstyle), Paragraph(details.signing_time or '', pstyle)],
+        [Paragraph('Формат подписи:', pstyle), Paragraph(details.format, pstyle)],
     ], colWidths=[220, 280])
     cert_tbl.setStyle(TableStyle([
         ('BOX', (0, 0), (-1, -1), 0.8, colors.black),

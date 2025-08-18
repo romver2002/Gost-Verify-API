@@ -1,10 +1,11 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.responses import HTMLResponse, StreamingResponse
-from typing import Dict
 from io import BytesIO
 
+from models import VerifyApiResponse
 from verify_gost_detached import verify_detached_cms
 from report import build_pdf_report
+from sign_gost_detached import create_detached_cms, create_detached_cms_from_pfx
 
 app = FastAPI(title="GOST 2012 Verify API")
 
@@ -117,15 +118,12 @@ async def index() -> str:
 """
 
 
-@app.post("/api/verify")
-async def api_verify(pdf: UploadFile = File(...), sig: UploadFile = File(...)) -> Dict:
-    try:
-        pdf_bytes = await pdf.read()
-        sig_bytes = await sig.read()
-        ok, details = verify_detached_cms(pdf_bytes, sig_bytes)
-        return {"ok": ok, "details": details}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+@app.post("/api/verify", response_model=VerifyApiResponse)
+async def api_verify(pdf: UploadFile = File(...), sig: UploadFile = File(...)):
+    pdf_bytes = await pdf.read()
+    sig_bytes = await sig.read()
+    ok, details = verify_detached_cms(pdf_bytes, sig_bytes)
+    return VerifyApiResponse(ok=ok, details=details)
 
 
  
@@ -137,9 +135,58 @@ async def api_report(pdf: UploadFile = File(...), sig: UploadFile = File(...)):
         pdf_bytes = await pdf.read()
         sig_bytes = await sig.read()
         ok, details = verify_detached_cms(pdf_bytes, sig_bytes)
-        content = build_pdf_report(ok, details, pdf_name=pdf.filename or 'document.pdf', sig_name=sig.filename or 'signature.sig')
+        if not ok:
+            # Убедимся, что details - это VerificationError, чтобы получить сообщение
+            error_msg = getattr(details, 'error', 'Unknown verification error')
+            raise HTTPException(status_code=400, detail=error_msg)
+
+        content = build_pdf_report(
+            ok,
+            details,
+            pdf_name=pdf.filename or 'document.pdf',
+            sig_name=sig.filename or 'signature.sig'
+        )
         return StreamingResponse(BytesIO(content), media_type="application/pdf", headers={
             "Content-Disposition": "attachment; filename=report.pdf"
+        })
+    except Exception as e:
+        # Перехватываем и HTTP-исключения, и другие
+        detail = e.detail if isinstance(e, HTTPException) else str(e)
+        raise HTTPException(status_code=400, detail=detail)
+
+
+@app.post("/api/sign")
+async def api_sign(pdf: UploadFile = File(...), cert: UploadFile = File(...), private_key_hex: str = Form(...)):
+    """
+    Создать откреплённую подпись CMS для переданного файла.
+    Важно: private_key_hex — строка в hex с приватным ключом ГОСТ (скаляр d), big-endian.
+    """
+    try:
+        pdf_bytes = await pdf.read()
+        cert_bytes = await cert.read()
+        key_hex = private_key_hex.strip()
+        sig_bytes = create_detached_cms(pdf_bytes, cert_bytes, key_hex)
+        return StreamingResponse(BytesIO(sig_bytes), media_type="application/pkcs7-signature", headers={
+            "Content-Disposition": "attachment; filename=document.sig"
+        })
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/sign/pfx")
+async def api_sign_pfx(pdf: UploadFile = File(...), pfx: UploadFile = File(...), password: str = Form('')):
+    """
+    Создать откреплённую подпись CMS из PKCS#12 (PFX).
+
+    Ограничение: поддержан только PFX, содержащий незашифрованный KeyBag (PrivateKeyInfo) и x509 certBag.
+    Зашифрованные ShroudedKeyBag не поддержаны в этой сборке без внешних провайдеров.
+    """
+    try:
+        pdf_bytes = await pdf.read()
+        pfx_bytes = await pfx.read()
+        sig_bytes = create_detached_cms_from_pfx(pdf_bytes, pfx_bytes, password)
+        return StreamingResponse(BytesIO(sig_bytes), media_type="application/pkcs7-signature", headers={
+            "Content-Disposition": "attachment; filename=document.sig"
         })
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
